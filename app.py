@@ -513,67 +513,236 @@ def chat_with_tools(
 def metrics_text(metrics: Optional[Dict[str, Any]]) -> str:
     if not metrics:
         return ""
-    source = "real API usage" if metrics.get("usage_source") == "api" else "estimated tokens"
-    tools_sent = metrics.get("tools_sent") or []
+    source = "API" if metrics.get("usage_source") == "api" else "est."
     tools_called = metrics.get("tools_called") or []
     called_text = ", ".join(tools_called) if tools_called else "none"
     return (
-        f"⏱️ {metrics.get('response_time_s', 0):.2f}s · "
-        f"🧮 {metrics.get('total_tokens', 0)} tokens ({source}) · "
-        f"prompt {metrics.get('prompt_tokens', 0)} / completion {metrics.get('completion_tokens', 0)} · "
+        f"{metrics.get('response_time_s', 0):.2f}s · "
+        f"{metrics.get('total_tokens', 0)} tokens ({source}) · "
         f"model {metrics.get('model', 'unknown')} · "
-        f"tools sent {len(tools_sent)} · tools called: {called_text}"
+        f"tools: {called_text}"
     )
 
 
 def reset_chat(welcome: str):
     st.session_state.messages = [{"role": "assistant", "content": welcome}]
+    st.session_state.pop("pending_question", None)
 
 
-def main():
-    st.set_page_config(page_title="Workshop Chatbot Template", page_icon="🤖", layout="centered")
+def inject_custom_css():
+    st.markdown(
+        """
+        <style>
+            .block-container {
+                padding-top: 1.5rem;
+                padding-bottom: 2rem;
+                max-width: 820px;
+            }
+            [data-testid="stSidebar"] {
+                background: linear-gradient(180deg, #FFFFFF 0%, #F1F5F9 100%);
+                border-right: 1px solid #E2E8F0;
+            }
+            [data-testid="stSidebar"] .block-container {
+                padding-top: 1.25rem;
+            }
+            .sidebar-section {
+                font-size: 0.72rem;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: #64748B;
+                margin: 1.25rem 0 0.5rem 0;
+            }
+            .hero-card {
+                background: linear-gradient(135deg, #FFFFFF 0%, #F8FAFF 100%);
+                border: 1px solid #E2E8F0;
+                border-radius: 18px;
+                padding: 1.25rem 1.5rem;
+                margin-bottom: 1rem;
+                box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+            }
+            .hero-title {
+                font-size: 1.85rem;
+                font-weight: 700;
+                color: #0F172A;
+                margin: 0 0 0.35rem 0;
+                line-height: 1.2;
+            }
+            .hero-subtitle {
+                font-size: 0.98rem;
+                color: #475569;
+                margin: 0 0 0.85rem 0;
+                line-height: 1.5;
+            }
+            .badge-row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.45rem;
+            }
+            .badge {
+                display: inline-block;
+                padding: 0.22rem 0.65rem;
+                border-radius: 999px;
+                font-size: 0.78rem;
+                font-weight: 600;
+                border: 1px solid transparent;
+            }
+            .badge-company {
+                background: #EEF2FF;
+                color: #4338CA;
+                border-color: #C7D2FE;
+            }
+            .badge-knowledge {
+                background: #ECFDF5;
+                color: #047857;
+                border-color: #A7F3D0;
+            }
+            .badge-live {
+                background: #F0FDF4;
+                color: #15803D;
+                border-color: #BBF7D0;
+            }
+            .badge-demo {
+                background: #FFF7ED;
+                color: #C2410C;
+                border-color: #FED7AA;
+            }
+            .metrics-pill {
+                display: inline-block;
+                margin-top: 0.35rem;
+                padding: 0.3rem 0.7rem;
+                border-radius: 8px;
+                background: #F1F5F9;
+                color: #64748B;
+                font-size: 0.75rem;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            }
+            .hint-label {
+                font-size: 0.82rem;
+                color: #64748B;
+                margin: 0.5rem 0 0.65rem 0;
+            }
+            div[data-testid="stChatMessage"] {
+                border-radius: 14px;
+                padding: 0.15rem 0.25rem;
+            }
+            div[data-testid="stChatInput"] {
+                border-radius: 14px;
+            }
+            div[data-testid="stChatInput"] textarea {
+                border-radius: 14px !important;
+            }
+            .stButton > button[kind="secondary"] {
+                border-radius: 999px;
+                border: 1px solid #E2E8F0;
+                background: #FFFFFF;
+                color: #334155;
+                font-size: 0.84rem;
+                padding: 0.35rem 0.9rem;
+                transition: all 0.15s ease;
+            }
+            .stButton > button[kind="secondary"]:hover {
+                border-color: #6366F1;
+                color: #4338CA;
+                background: #EEF2FF;
+            }
+            [data-testid="stSidebar"] .stButton > button {
+                border-radius: 10px;
+                width: 100%;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    company = load_json(CONFIG_DIR / "company.json", {})
-    personality = load_json(CONFIG_DIR / "personality.json", {})
-    tools_cfg = load_json(CONFIG_DIR / "tools.json", {})
-    model_cfg = load_json(CONFIG_DIR / "model.json", {})
-    runtime_tools_cfg = make_runtime_tools_config(tools_cfg)
 
-    logo_path = find_company_logo()
+def render_header(company: Dict[str, Any], logo_path: Optional[Path], chunk_count: int, demo_mode: bool):
+    bot_name = company.get("bot_name", "Workshop Chatbot")
+    bot_goal = company.get("bot_goal", "A simple chatbot template students can personalize.")
+    company_name = company.get("company_name", "Student company")
+
+    logo_col, text_col = st.columns([1, 5], gap="medium")
+    with logo_col:
+        if st.session_state.get("preview_logo"):
+            st.image(st.session_state.preview_logo, width=88)
+        elif logo_path:
+            st.image(str(logo_path), width=88)
+        else:
+            st.markdown(
+                '<div style="width:88px;height:88px;border-radius:18px;'
+                'background:linear-gradient(135deg,#6366F1,#8B5CF6);display:flex;'
+                'align-items:center;justify-content:center;font-size:2rem;">🤖</div>',
+                unsafe_allow_html=True,
+            )
+
+    with text_col:
+        status_badge = (
+            '<span class="badge badge-demo">Demo mode</span>'
+            if demo_mode
+            else '<span class="badge badge-live">Live</span>'
+        )
+        st.markdown(
+            f"""
+            <div class="hero-card">
+                <div class="hero-title">{bot_name}</div>
+                <div class="hero-subtitle">{bot_goal}</div>
+                <div class="badge-row">
+                    <span class="badge badge-company">{company_name}</span>
+                    <span class="badge badge-knowledge">{chunk_count} knowledge chunks</span>
+                    {status_badge}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def render_sidebar(
+    company: Dict[str, Any],
+    tools_cfg: Dict[str, Any],
+    model_cfg: Dict[str, Any],
+    logo_path: Optional[Path],
+) -> Dict[str, Any]:
+    make_runtime_tools_config(tools_cfg)
 
     with st.sidebar:
-        st.header("Workshop controls")
+        st.markdown("### ⚙️ Controls")
+        st.caption("Workshop settings — changes apply on the next message.")
+
+        st.markdown('<div class="sidebar-section">Model</div>', unsafe_allow_html=True)
         selected_model = st.selectbox(
             "Model",
             ["glm-5-1", "hypernova-60b"],
             index=0 if normalize_model(model_cfg.get("default_model", "glm-5-1")) == "glm-5-1" else 1,
+            label_visibility="collapsed",
         )
         model_cfg["default_model"] = selected_model
 
-        st.write("**Company**")
-        st.write(company.get("company_name", "Student company"))
+        st.markdown('<div class="sidebar-section">Company</div>', unsafe_allow_html=True)
+        st.markdown(f"**{company.get('company_name', 'Student company')}**")
 
-        st.write("**Logo**")
+        st.markdown('<div class="sidebar-section">Logo</div>', unsafe_allow_html=True)
         uploaded_logo = st.file_uploader(
-            "Temporary logo preview",
+            "Preview logo",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            help="For a permanent logo, save an image in the company_logo folder in the GitHub repo.",
+            help="For a permanent logo, add an image to company_logo/ in GitHub.",
+            label_visibility="collapsed",
         )
         if uploaded_logo is not None:
             st.session_state.preview_logo = uploaded_logo.getvalue()
             st.session_state.preview_logo_name = uploaded_logo.name
         if logo_path:
-            st.caption(f"Permanent logo loaded: company_logo/{logo_path.name}")
+            st.caption(f"✓ {logo_path.name}")
         else:
-            st.caption("No permanent logo yet. Add one image to company_logo/.")
+            st.caption("Add a logo to company_logo/")
 
-        st.write("**Tool toggles**")
-        st.caption("Turn tools on/off and ask the same question again to compare tokens and response time.")
+        st.markdown('<div class="sidebar-section">Tools</div>', unsafe_allow_html=True)
+        st.caption("Toggle tools and compare tokens & speed.")
         for name, cfg in tools_cfg.get("tools", {}).items():
             default_value = bool(st.session_state.tool_enabled_overrides.get(name, cfg.get("enabled", False)))
             st.session_state.tool_enabled_overrides[name] = st.checkbox(
-                name,
+                name.replace("_", " "),
                 value=default_value,
                 help=cfg.get("student_note", ""),
                 key=f"toggle_{name}",
@@ -581,43 +750,71 @@ def main():
 
         runtime_tools_cfg = make_runtime_tools_config(tools_cfg)
         enabled = active_tool_names(runtime_tools_cfg)
-        st.write("**Enabled now**")
-        st.write(", ".join(enabled) if enabled else "No tools enabled")
 
-        if st.button("Reset chat"):
+        st.markdown('<div class="sidebar-section">Active</div>', unsafe_allow_html=True)
+        if enabled:
+            st.markdown(" · ".join(f"`{name}`" for name in enabled))
+        else:
+            st.caption("No tools enabled")
+
+        st.divider()
+        if st.button("↺ Reset chat", use_container_width=True):
             reset_chat(company.get("welcome_message", "Hello! How can I help?"))
+            st.rerun()
 
-        st.info("Edit JSON files in /config, add data to /company_data, and add a logo to /company_logo.")
+        st.caption("Edit `/config`, add files to `/company_data`, logo to `/company_logo`.")
 
-    if st.session_state.get("preview_logo"):
-        st.image(st.session_state.preview_logo, width=96)
-    elif logo_path:
-        st.image(str(logo_path), width=96)
+    return make_runtime_tools_config(tools_cfg)
 
-    st.title(company.get("bot_name", "Workshop Chatbot"))
-    st.caption(company.get("bot_goal", "A simple chatbot template students can personalize."))
 
-    uploaded_files = st.file_uploader(
-        "Optional: upload company files for this session",
-        type=["txt", "md", "json", "csv", "pdf", "docx"],
-        accept_multiple_files=True,
-        help="For permanent data, add files to the company_data folder in the repository.",
-    )
+def render_suggested_questions(company: Dict[str, Any]):
+    examples = company.get("examples_of_good_questions") or []
+    if not examples or len(st.session_state.messages) > 1:
+        return
 
-    chunks = load_company_knowledge(uploaded_files)
-    st.caption(f"Loaded {len(chunks)} knowledge chunks from company_data and uploaded files.")
+    st.markdown('<div class="hint-label">Try asking:</div>', unsafe_allow_html=True)
+    cols = st.columns(min(len(examples), 3))
+    for i, question in enumerate(examples):
+        with cols[i % len(cols)]:
+            if st.button(question, key=f"suggest_{i}", type="secondary", use_container_width=True):
+                st.session_state.pending_question = question
+                st.rerun()
+
+
+def render_message_metrics(metrics: Optional[Dict[str, Any]]):
+    caption = metrics_text(metrics)
+    if caption:
+        st.markdown(f'<div class="metrics-pill">{caption}</div>', unsafe_allow_html=True)
+
+
+def main():
+    st.set_page_config(page_title="Workshop Chatbot Template", page_icon="🤖", layout="wide")
+
+    inject_custom_css()
+
+    company = load_json(CONFIG_DIR / "company.json", {})
+    personality = load_json(CONFIG_DIR / "personality.json", {})
+    tools_cfg = load_json(CONFIG_DIR / "tools.json", {})
+    model_cfg = load_json(CONFIG_DIR / "model.json", {})
+
+    logo_path = find_company_logo()
+    chunks = load_company_knowledge()
+    demo_mode = not bool(get_secret("COMPACTIF_API_KEY"))
+
+    runtime_tools_cfg = render_sidebar(company, tools_cfg, model_cfg, logo_path)
+    render_header(company, logo_path, len(chunks), demo_mode)
 
     if "messages" not in st.session_state:
         reset_chat(company.get("welcome_message", "Hello! How can I help?"))
 
+    render_suggested_questions(company)
+
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-            caption = metrics_text(msg.get("metrics"))
-            if caption:
-                st.caption(caption)
+            render_message_metrics(msg.get("metrics"))
 
-    user_input = st.chat_input("Ask the bot something...")
+    user_input = st.session_state.pop("pending_question", None) or st.chat_input("Message the assistant…")
     if not user_input:
         return
 
@@ -668,7 +865,7 @@ def main():
                     "tools_called": [],
                 }
             st.markdown(answer)
-            st.caption(metrics_text(metrics))
+            render_message_metrics(metrics)
 
     st.session_state.messages.append({"role": "assistant", "content": answer, "metrics": metrics})
 
