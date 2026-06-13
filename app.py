@@ -164,29 +164,6 @@ def search_chunks(query: str, chunks: List[Dict[str, str]], top_k: int = 4) -> L
     return [item for _, item in scored[:top_k]]
 
 
-def estimate_tokens(text: str) -> int:
-    """Tiny workshop-friendly estimate. Real counts depend on the model tokenizer."""
-    if not text:
-        return 0
-    return max(1, round(len(text) / 4))
-
-
-def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
-    total = 0
-    for msg in messages:
-        total += estimate_tokens(str(msg.get("role", "")))
-        total += estimate_tokens(str(msg.get("content", "")))
-        if msg.get("tool_calls"):
-            total += estimate_tokens(json.dumps(msg.get("tool_calls"), ensure_ascii=False))
-    return total
-
-
-def estimate_tools_tokens(tools: List[Dict[str, Any]]) -> int:
-    if not tools:
-        return 0
-    return estimate_tokens(json.dumps(tools, ensure_ascii=False))
-
-
 def build_system_prompt(company: Dict[str, Any], personality: Dict[str, Any], model_cfg: Dict[str, Any]) -> str:
     lines = [
         f"You are {company.get('bot_name', 'the assistant')}.",
@@ -374,6 +351,36 @@ def make_runtime_tools_config(tools_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return runtime_cfg
 
 
+def empty_usage_metrics(model: str) -> Dict[str, Any]:
+    return {
+        "response_time_s": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "usage_source": "unavailable",
+        "model": model,
+        "api_calls": 0,
+    }
+
+
+def parse_api_usage(usage: Dict[str, Any], model: str) -> Dict[str, Any]:
+    if usage.get("total_tokens") is None and usage.get("prompt_tokens") is None:
+        metrics = empty_usage_metrics(model)
+        metrics["usage_source"] = "unavailable"
+        return metrics
+
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "usage_source": "api",
+        "model": model,
+    }
+
+
 def compactif_chat(
     messages: List[Dict[str, Any]],
     model_cfg: Dict[str, Any],
@@ -387,23 +394,12 @@ def compactif_chat(
     if not api_key:
         content = (
             "Demo mode: add COMPACTIF_API_KEY in Streamlit secrets to connect the real model. "
-            "I can still show the UI flow, tool toggles, logo, and configuration structure."
+            "Token usage and cost are only shown when the API returns real usage data."
         )
         latency = time.perf_counter() - started
-        estimated_prompt = estimate_messages_tokens(messages) + estimate_tools_tokens(tools)
-        estimated_completion = estimate_tokens(content)
-        return {
-            "demo_mode": True,
-            "content": content,
-        }, {
-            "response_time_s": latency,
-            "prompt_tokens": estimated_prompt,
-            "completion_tokens": estimated_completion,
-            "total_tokens": estimated_prompt + estimated_completion,
-            "usage_source": "estimated",
-            "model": model,
-            "api_calls": 0,
-        }
+        metrics = empty_usage_metrics(model)
+        metrics["response_time_s"] = latency
+        return {"demo_mode": True, "content": content}, metrics
 
     payload: Dict[str, Any] = {
         "model": model,
@@ -429,26 +425,14 @@ def compactif_chat(
 
     data = response.json()
     message = data["choices"][0]["message"]
-    usage = data.get("usage") or {}
-
-    prompt_tokens = usage.get("prompt_tokens")
-    completion_tokens = usage.get("completion_tokens")
-    total_tokens = usage.get("total_tokens")
-    usage_source = "api" if total_tokens is not None else "estimated"
-
-    if total_tokens is None:
-        prompt_tokens = estimate_messages_tokens(messages) + estimate_tools_tokens(tools)
-        completion_tokens = estimate_tokens(str(message.get("content", "")))
-        if message.get("tool_calls"):
-            completion_tokens += estimate_tokens(json.dumps(message.get("tool_calls"), ensure_ascii=False))
-        total_tokens = prompt_tokens + completion_tokens
+    usage_metrics = parse_api_usage(data.get("usage") or {}, model)
 
     return message, {
         "response_time_s": latency,
-        "prompt_tokens": int(prompt_tokens or 0),
-        "completion_tokens": int(completion_tokens or 0),
-        "total_tokens": int(total_tokens or 0),
-        "usage_source": usage_source,
+        "prompt_tokens": usage_metrics["prompt_tokens"],
+        "completion_tokens": usage_metrics["completion_tokens"],
+        "total_tokens": usage_metrics["total_tokens"],
+        "usage_source": usage_metrics["usage_source"],
         "model": model,
         "api_calls": 1,
     }
@@ -461,7 +445,7 @@ def merge_metrics(total: Dict[str, Any], part: Dict[str, Any]) -> Dict[str, Any]
     total["total_tokens"] = int(total.get("total_tokens", 0)) + int(part.get("total_tokens", 0))
     total["api_calls"] = int(total.get("api_calls", 0)) + int(part.get("api_calls", 0))
     if part.get("usage_source") != "api":
-        total["usage_source"] = "estimated"
+        total["usage_source"] = "unavailable"
     total["model"] = part.get("model", total.get("model"))
     return total
 
@@ -493,7 +477,6 @@ def chat_with_tools(
         metrics = merge_metrics(metrics, part_metrics)
 
         if isinstance(message, dict) and message.get("demo_mode"):
-            metrics["usage_source"] = "estimated"
             return message["content"], metrics
 
         tool_calls = message.get("tool_calls") or []
@@ -546,25 +529,34 @@ def format_cost_usd(cost: Optional[float]) -> str:
 
 def attach_request_cost(metrics: Dict[str, Any], model_cfg: Dict[str, Any]) -> Dict[str, Any]:
     metrics = dict(metrics)
-    metrics["request_cost_usd"] = estimate_request_cost(
-        str(metrics.get("model", "")),
-        int(metrics.get("prompt_tokens", 0)),
-        int(metrics.get("completion_tokens", 0)),
-        model_cfg,
-    )
+    if metrics.get("usage_source") == "api":
+        metrics["request_cost_usd"] = estimate_request_cost(
+            str(metrics.get("model", "")),
+            int(metrics.get("prompt_tokens", 0)),
+            int(metrics.get("completion_tokens", 0)),
+            model_cfg,
+        )
+    else:
+        metrics["request_cost_usd"] = None
     return metrics
 
 
 def metrics_text(metrics: Optional[Dict[str, Any]]) -> str:
     if not metrics:
         return ""
-    source = "API" if metrics.get("usage_source") == "api" else "est."
     tools_called = metrics.get("tools_called") or []
     called_text = ", ".join(tools_called) if tools_called else "none"
+    if metrics.get("usage_source") != "api":
+        return (
+            f"{metrics.get('response_time_s', 0):.2f}s · "
+            f"tokens n/a · "
+            f"model {metrics.get('model', 'unknown')} · "
+            f"tools: {called_text}"
+        )
     cost_text = format_cost_usd(metrics.get("request_cost_usd"))
     return (
         f"{metrics.get('response_time_s', 0):.2f}s · "
-        f"{metrics.get('total_tokens', 0)} tokens ({source}) · "
+        f"{metrics.get('total_tokens', 0)} tokens · "
         f"cost {cost_text} · "
         f"model {metrics.get('model', 'unknown')} · "
         f"tools: {called_text}"
@@ -699,12 +691,8 @@ def render_sidebar(
 
         runtime_tools_cfg = make_runtime_tools_config(tools_cfg)
         enabled = active_tool_names(runtime_tools_cfg)
-        tool_schema = build_tools(runtime_tools_cfg)
-        tool_token_cost = estimate_tools_tokens(tool_schema)
 
-        c1, c2 = st.columns(2)
-        c1.metric("Tools on", len(enabled))
-        c2.metric("Tool tokens", f"~{tool_token_cost}", help="Approx. tokens the tool definitions add to every prompt.")
+        st.metric("Tools on", len(enabled))
 
         st.divider()
         if st.button("↺ Reset chat", use_container_width=True):
@@ -740,6 +728,9 @@ def render_message_metrics(metrics: Optional[Dict[str, Any]]):
 
 
 def record_run(question: str, metrics: Dict[str, Any]):
+    if metrics.get("usage_source") != "api":
+        return
+
     if "runs" not in st.session_state:
         st.session_state.runs = []
 
@@ -757,7 +748,6 @@ def record_run(question: str, metrics: Dict[str, Any]):
         "Total tok": int(metrics.get("total_tokens", 0)),
         "Cost ($)": round(float(cost), 6) if cost is not None else None,
         "Tools called": ", ".join(tools_called) if tools_called else "—",
-        "Source": "API" if metrics.get("usage_source") == "api" else "estimated",
     })
 
 
@@ -855,8 +845,8 @@ def render_comparison_lab(demo_mode: bool, model_cfg: Dict[str, Any]):
 
     if demo_mode:
         st.info(
-            "Demo mode: tokens are **estimated** and time is near zero, so models look identical. "
-            "Add `COMPACTIF_API_KEY` in secrets to see real per-model token counts and timing.",
+            "Demo mode: add `COMPACTIF_API_KEY` in secrets to get real model replies, "
+            "token usage, and cost in the Comparison lab.",
             icon="ℹ️",
         )
 
@@ -929,7 +919,7 @@ def render_chat_tab(
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
-                    "usage_source": "estimated",
+                    "usage_source": "unavailable",
                     "api_calls": 0,
                     "model": normalize_model(model_cfg.get("default_model", "glm-5-1")),
                     "tools_sent": tool_names,
