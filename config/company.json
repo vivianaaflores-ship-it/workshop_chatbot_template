@@ -1,11 +1,11 @@
 {
-  "company_name": "ChangeMe Company",
-  "bot_name": "ChangeMe Assistant",
-  "bot_goal": "Help users understand the company, solve common problems, and know when to contact a human.",
-  "target_users": "Customers, employees, or technicians",
-  "product_service": "Describe the product or service here",
-  "contact_email": "support@example.com",
-  "timezone": "Europe/Madrid",
+  "company_name": "R2SportsLab",
+  "bot_name": "Tu asistente Virtual",
+  "bot_goal": "¿Cómo puedo ayudarte?. Dime lo que necesitas.",
+  "target_users": "Clientes, proveedores",
+  "product_service": "Servicios de Rendimiento y Recuperación Deportiva",
+  "contact_email": "viviana.a.flores@gmail.com",
+  "timezone": "Santiago/Chile",
   "welcome_message": "Hi! I am your workshop chatbot. Ask me about the company, and try switching models and tools to compare token usage and speed.",
   "escalation_text": "I recommend contacting a human from the company for this case.",
   "examples_of_good_questions": [
