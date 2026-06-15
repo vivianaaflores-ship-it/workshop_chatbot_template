@@ -6,10 +6,10 @@
   "product_service": "Servicios de Rendimiento y Recuperación Deportiva",
   "contact_email": "viviana.a.flores@gmail.com",
   "timezone": "Santiago/Chile",
-  "welcome_message": "Hi! I am your workshop chatbot. Ask me about the company, and try switching models and tools to compare token usage and speed.",
-  "escalation_text": "I recommend contacting a human from the company for this case.",
+  "welcome_message": "Hola! Soy SofIA, tu asistente Virtual de R2SportsLab. Dime qué información necesitas.",
+  "escalation_text": "Por favor te recomiendo contactarte con nuestro personal al teléfono 37482910.",
   "examples_of_good_questions": [
-    "What services does the company offer?",
+    "Qué servicio necesitas?",
     "How much is 120 times 0.21?",
     "How can you help me?"
   ]
